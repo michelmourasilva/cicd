@@ -173,7 +173,7 @@ services:
     # >> docker info| grep -A 20 "Insecure Registries"
     #image: piomin/jenkins-slave-dind-jnlp     
     build: 
-      context: ./scripts/jenkins-slave-dind-jnlp
+      context: ./JenkinsAgentImage/jenkins-slave-dind-jnlp
       dockerfile: Dockerfile-criacao
     depends_on:
     - jenkins
