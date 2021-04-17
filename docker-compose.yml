@@ -4,14 +4,21 @@ services:
   redis:
     restart: always
     image: sameersbn/redis:latest
+    networks:
+      cicd:
+          ipv4_address: 172.19.0.5
     command:
     - --loglevel warning
+    ports:
+    - '6379:6379'
     volumes:
     - /srv/docker/gitlab/redis:/var/lib/redis:Z
-
   postgresql:
     restart: always
     image: 'postgres:12.1-alpine'
+    networks:
+      cicd:
+          ipv4_address: 172.19.0.4
     volumes:
     - /srv/docker/gitlab/postgresql:/var/lib/postgresql:Z
     ports:
@@ -21,152 +28,172 @@ services:
     - DB_PASS=password
     - DB_NAME=gitlabhq_production
     - DB_EXTENSION=pg_trgm
-
   gitlab:
     restart: always
     image: gitlab/gitlab-ce:13.5.1-ce.0
+    networks:
+      cicd:
+          ipv4_address: 172.19.0.3
+          aliases:
+          - gitlab_com
     depends_on:
     - redis
     - postgresql
+#    external_links:
+#    - "registry:registry"
     ports:
-    - "8080:8080"
+    - "10022:22"
+    - "80:80"
+    - "443:443"
+    - "5000:5000"
+    expose:
+    - "5000"
     volumes:
-    - /srv/docker/gitlab/gitlab:/home/git/data:Z
+    - gitlab-data:/home/git/data:Z
+    - gitlab-logs:/var/log/gitlab
+    - ./certs:/certs
+
     environment:
-    - DEBUG=true
+        # template .rb >> https://gitlab.com/gitlab-org/omnibus-gitlab/blob/master/files/gitlab-config-template/gitlab.rb.template
+        GITLAB_OMNIBUS_CONFIG: |
+        
+            gitlab_rails['initial_root_password'] = "23071223"
+        
+        
+            gitlab_rails['auto_migrate'] = true
+            gitlab_rails['db_username'] = "postgres"
+            gitlab_rails['db_password'] = "password"
+            gitlab_rails['db_host'] = "172.19.0.4"
+            gitlab_rails['db_port'] = "5432"
+            gitlab_rails['db_database'] = "postgres"
+            gitlab_rails['db_adapter'] = "postgresql"
+            gitlab_rails['db_encoding'] = "utf8"
+            
+            redis['enable'] = false
+            gitlab_rails['redis_host'] = "172.19.0.5"
+            gitlab_rails['redis_port'] = "6379"
+            gitlab_rails['redis_enable_client'] = true
 
-    - DB_ADAPTER=postgresql
-    - DB_HOST=postgresql
-    - DB_PORT=5432
-    - DB_USER=gitlab
-    - DB_PASS=password
-    - DB_NAME=gitlabhq_production
 
-    - REDIS_HOST=redis
-    - REDIS_PORT=6379
+            # Documentaćão da arquitetura Registry/Gitlab >> https://docs.gitlab.com/omnibus/architecture/registry/            
+            # Enderećo que aparece no site do gitlab para poder realizar o login no regyster
+            registry_external_url "http://172.19.0.7:9001" 
+            gitlab_rails['registry_enabled'] = true
+            gitlab_rails['registry_host'] = "172.19.0.7"
+            gitlab_rails['registry_port'] = "9001"            
+            
+            # Pagina dentro do gitlab, é executada quando abre a općão de container register / correto
+            gitlab_rails['registry_api_url'] = "http://localhost:5000"
+            
+            # Essa chave tem que ser criada dentro do Registry
+            gitlab_rails['registry_key_path'] = "/certs/registry.key" 
+            
+            # Configuraćão que deve ser igual a do Registry
+            gitlab_rails['registry_issuer'] = "gitlab-issuer"            
+            
+            #registry['registry_http_addr'] = "localhost:5000"
 
-    - TZ=Brazil/East
-    - GITLAB_TIMEZONE=Sao_Paulo
+  ci_runner:
+    image: gitlab/gitlab-runner:alpine
+    depends_on:
+    - gitlab
+    restart: always
+    volumes:
+    - ./gitlab/runner:/etc/gitlab-runner:Z
+    networks:
+      cicd:
+        ipv4_address: 172.19.0.9
+        aliases:
+        - runner_com
+#    environment:
+#    - DOCKER_HOST="tcp://172.19.0.8:2375"
+  registry:
+    # Documentaćão para deploy no registro >> https://docs.docker.com/registry/deploying/
+    image: registry:2
+    ports:
+    - 9001:5000
+    expose:
+    - "5000"
+    - "9001"
+    volumes:
+    - ./gitlab/shared/registry:/registry
+    - ./certs:/certs
+#    external_links:
+#    - "gitlab:gitlab"
+    environment:
+    - REGISTRY_LOG_LEVEL=info
+    - REGISTRY_STORAGE_FILESYSTEM_ROOTDIRECTORY=/registry
+    - REGISTRY_STORAGE_DELETE_ENABLED=true
+    - REGISTRY_STORAGE_CACHE_BLOBDESCRIPTOR=redis
+    - REGISTRY_REDIS_ADDR=redis:v
+    - REGISTRY_HTTP_SECRET=registrysegredo
+#   - REGISTRY_AUTH_TOKEN_REALM=https://172.19.0.3/jwt/auth
+#   - REGISTRY_AUTH_TOKEN_SERVICE=container_registry
+#   - REGISTRY_AUTH_TOKEN_ISSUER=gitlab-issuer
+#   - REGISTRY_AUTH_TOKEN_ROOTCERTBUNDLE=/certs/registry.crt
 
-    - GITLAB_HTTPS=false
-    - SSL_SELF_SIGNED=false
-
-    - GITLAB_HOST=localhost
-    - GITLAB_PORT=8080
-    - GITLAB_SSH_PORT=8022
-    - GITLAB_RELATIVE_URL_ROOT=
-    - GITLAB_SECRETS_DB_KEY_BASE=long-and-random-alphanumeric-string
-    - GITLAB_SECRETS_SECRET_KEY_BASE=long-and-random-alphanumeric-string
-    - GITLAB_SECRETS_OTP_KEY_BASE=long-and-random-alphanumeric-string
-
-    - GITLAB_ROOT_PASSWORD=
-    - GITLAB_ROOT_EMAIL=
-
-    - GITLAB_NOTIFY_ON_BROKEN_BUILDS=true
-    - GITLAB_NOTIFY_PUSHER=false
-
-    - GITLAB_EMAIL=notifications@example.com
-    - GITLAB_EMAIL_REPLY_TO=noreply@example.com
-    - GITLAB_INCOMING_EMAIL_ADDRESS=reply@example.com
-
-    - GITLAB_BACKUP_SCHEDULE=disable
-    - GITLAB_BACKUP_TIME=01:00
-
-    - SMTP_ENABLED=false
-    - SMTP_DOMAIN=www.example.com
-    - SMTP_HOST=smtp.gmail.com
-    - SMTP_PORT=587
-    - SMTP_USER=mailer@example.com
-    - SMTP_PASS=password
-    - SMTP_STARTTLS=true
-    - SMTP_AUTHENTICATION=login
-
-    - IMAP_ENABLED=false
-    - IMAP_HOST=imap.gmail.com
-    - IMAP_PORT=993
-    - IMAP_USER=mailer@example.com
-    - IMAP_PASS=password
-    - IMAP_SSL=true
-    - IMAP_STARTTLS=false
-
-    - OAUTH_ENABLED=false
-    - OAUTH_AUTO_SIGN_IN_WITH_PROVIDER=
-    - OAUTH_ALLOW_SSO=
-    - OAUTH_BLOCK_AUTO_CREATED_USERS=true
-    - OAUTH_AUTO_LINK_LDAP_USER=false
-    - OAUTH_AUTO_LINK_SAML_USER=false
-    - OAUTH_EXTERNAL_PROVIDERS=
-
-    - OAUTH_CAS3_LABEL=cas3
-    - OAUTH_CAS3_SERVER=
-    - OAUTH_CAS3_DISABLE_SSL_VERIFICATION=false
-    - OAUTH_CAS3_LOGIN_URL=/cas/login
-    - OAUTH_CAS3_VALIDATE_URL=/cas/p3/serviceValidate
-    - OAUTH_CAS3_LOGOUT_URL=/cas/logout
-
-    - OAUTH_GOOGLE_API_KEY=
-    - OAUTH_GOOGLE_APP_SECRET=
-    - OAUTH_GOOGLE_RESTRICT_DOMAIN=
-
-    - OAUTH_FACEBOOK_API_KEY=
-    - OAUTH_FACEBOOK_APP_SECRET=
-
-    - OAUTH_TWITTER_API_KEY=
-    - OAUTH_TWITTER_APP_SECRET=
-
-    - OAUTH_GITHUB_API_KEY=
-    - OAUTH_GITHUB_APP_SECRET=
-    - OAUTH_GITHUB_URL=
-    - OAUTH_GITHUB_VERIFY_SSL=
-
-    - OAUTH_GITLAB_API_KEY=
-    - OAUTH_GITLAB_APP_SECRET=
-
-    - OAUTH_BITBUCKET_API_KEY=
-    - OAUTH_BITBUCKET_APP_SECRET=
-
-    - OAUTH_SAML_ASSERTION_CONSUMER_SERVICE_URL=
-    - OAUTH_SAML_IDP_CERT_FINGERPRINT=
-    - OAUTH_SAML_IDP_SSO_TARGET_URL=
-    - OAUTH_SAML_ISSUER=
-    - OAUTH_SAML_LABEL="Our SAML Provider"
-    - OAUTH_SAML_NAME_IDENTIFIER_FORMAT=urn:oasis:names:tc:SAML:2.0:nameid-format:transient
-    - OAUTH_SAML_GROUPS_ATTRIBUTE=
-    - OAUTH_SAML_EXTERNAL_GROUPS=
-    - OAUTH_SAML_ATTRIBUTE_STATEMENTS_EMAIL=
-    - OAUTH_SAML_ATTRIBUTE_STATEMENTS_NAME=
-    - OAUTH_SAML_ATTRIBUTE_STATEMENTS_FIRST_NAME=
-    - OAUTH_SAML_ATTRIBUTE_STATEMENTS_LAST_NAME=
-
-    - OAUTH_CROWD_SERVER_URL=
-    - OAUTH_CROWD_APP_NAME=
-    - OAUTH_CROWD_APP_PASSWORD=
-
-    - OAUTH_AUTH0_CLIENT_ID=
-    - OAUTH_AUTH0_CLIENT_SECRET=
-    - OAUTH_AUTH0_DOMAIN=
-
-    - OAUTH_AZURE_API_KEY=
-    - OAUTH_AZURE_API_SECRET=
-    - OAUTH_AZURE_TENANT_ID=
+    networks:
+      cicd:
+        ipv4_address: 172.19.0.7
+        aliases:
+        - registry_com
+    restart: always
   jenkins:
     image: jenkins/jenkins:lts
+    networks:
+      cicd:
+        ipv4_address: 172.19.0.2
+        aliases:
+        - jenkins_com
     privileged: true
+    restart: always
     user: root
     ports:
-      - 8083:8080
-      - 50003:50000
-    container_name: local-kenkins
+    - 8083:8080
+    - 50000:50000
     volumes:
-      - ~/jenkins_data:/var/jenkins_home
-      - /var/run/docker.sock:/var/run/docker.sock
-  rancher:
-    image: rancher/rancher:latest
-    entrypoint: ["entrypoint.sh", "--no-cacerts"]
-    restart: always
+    - ~/jenkins_data:/var/jenkins_home
+    - /var/run/docker.sock:/var/run/docker.sock
+    - ./data/scripts:/usr/sbin/init
+#    entrypoint: /usr/sbin/init/install_docker.sh
+#    environment:
+#    - DOCKER_HOST=tcp://172.19.0.8:2376
+#    - DOCKER_CERT_PATH=/certs/client
+#    - DOCKER_TLS_CERTDIR=/certs/client
+#    - DOCKER_TLS_VERIFY=1
+#    group_add:
+#    - 998 #docker group id
+#    command: /bin/sh -c "/usr/sbin/init/install_docker.sh"
+  dind:
+    # https://piotrminkowski.wordpress.com/tag/continuous-delivery/
+    # https://www.youtube.com/watch?v=GLiCeMO35qE
+    image: piomin/jenkins-slave-dind-jnlp
+    entrypoint: /usr/sbin/init/insecureregistries.sh
+    depends_on:
+    - jenkins
+    networks:
+      cicd:
+        ipv4_address: 172.19.0.8
     privileged: true
-    ports:
-      - 80:80
-      - 443:443
     volumes:
-      - /data:/var/lib/rancher
+    - ./scripts:/usr/sbin/init
+    environment:
+    - JENKINS_SLAVE_SECRET=b7fe13b367b97e2f5174badc8b64cee8e23035ad4254a40411426a9c2590bf0c
+    - JENKINS_SLAVE_NAME=dind-node
+    - JENKINS_URL=http://jenkins_com:8080
+#    - CI_SERVER_URL=http://gitlab_com
+    privileged: true
+
+networks:
+  cicd:
+    driver: bridge
+    ipam:
+      driver: default
+      config:
+        - subnet: 172.19.0.0/24
+          gateway: 172.19.0.1
+volumes:
+    gitlab-data:
+    gitlab-logs:
+    postgresql:
+    redis:
