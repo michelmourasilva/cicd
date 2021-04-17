@@ -167,16 +167,19 @@ services:
   dind:
     # https://piotrminkowski.wordpress.com/tag/continuous-delivery/
     # https://www.youtube.com/watch?v=GLiCeMO35qE
-    image: piomin/jenkins-slave-dind-jnlp
-    entrypoint: /usr/sbin/init/insecureregistries.sh
+    # Essa imagem precisou se criada do zero para atender a registrys não seguros
+    #   para isso foi usada como base a imagem do enderećo https://github.com/piomin/jenkins-slave-dind-jnlp
+    # Comando para visualizar os registryes inseguros
+    # >> docker info| grep -A 20 "Insecure Registries"
+    #image: piomin/jenkins-slave-dind-jnlp     
+    build: 
+      context: ./scripts/jenkins-slave-dind-jnlp
+      dockerfile: Dockerfile-criacao
     depends_on:
     - jenkins
     networks:
       cicd:
         ipv4_address: 172.19.0.8
-    privileged: true
-    volumes:
-    - ./scripts:/usr/sbin/init
     environment:
     - JENKINS_SLAVE_SECRET=b7fe13b367b97e2f5174badc8b64cee8e23035ad4254a40411426a9c2590bf0c
     - JENKINS_SLAVE_NAME=dind-node
