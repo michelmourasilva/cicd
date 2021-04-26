@@ -57,7 +57,7 @@ services:
         # template .rb >> https://gitlab.com/gitlab-org/omnibus-gitlab/blob/master/files/gitlab-config-template/gitlab.rb.template
         GITLAB_OMNIBUS_CONFIG: |
         
-            gitlab_rails['initial_root_password'] = "23071223"
+            gitlab_rails['initial_root_password'] = "xxxxxxxx"
         
         
             gitlab_rails['auto_migrate'] = true
