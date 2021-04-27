@@ -39,15 +39,11 @@ services:
     depends_on:
     - redis
     - postgresql
-#    external_links:
-#    - "registry:registry"
     ports:
     - "10022:22"
     - "80:80"
     - "443:443"
     - "5000:5000"
-    expose:
-    - "5000"
     volumes:
     - gitlab-data:/home/git/data:Z
     - gitlab-logs:/var/log/gitlab
@@ -55,11 +51,24 @@ services:
 
     environment:
         # template .rb >> https://gitlab.com/gitlab-org/omnibus-gitlab/blob/master/files/gitlab-config-template/gitlab.rb.template
+        # variaveis do pipeline >> https://docs.gitlab.com/ee/ci/variables/predefined_variables.html
         GITLAB_OMNIBUS_CONFIG: |
         
-            gitlab_rails['initial_root_password'] = "xxxxxxxx"
-        
-        
+            # Caso seja necessário recriar os certificados
+            # gitlab-ctl renew-le-certs
+            # Folder: /etc/gitlab/ssl/
+            # gitlab-ctl reconfigure
+            #letsencrypt['enable'] = true                     
+            external_url = "http://172.19.0.3"        
+            #letsencrypt['contact_emails'] = ['root@example.com'] 
+            #letsencrypt['auto_renew_hour'] = "12"
+            #letsencrypt['auto_renew_minute'] = "30"
+            #letsencrypt['auto_renew_day_of_month'] = "*/7"       
+            #nginx['redirect_http_to_https'] = false
+            #nginx['redirect_http_to_https_port'] = 80
+
+            #gitlab_rails['initial_root_password'] = "1234567890"
+            
             gitlab_rails['auto_migrate'] = true
             gitlab_rails['db_username'] = "postgres"
             gitlab_rails['db_password'] = "password"
@@ -74,70 +83,44 @@ services:
             gitlab_rails['redis_port'] = "6379"
             gitlab_rails['redis_enable_client'] = true
 
+          
+            # Configuracao do arquivo /etc/gitlab/gitlab.rb - necessário reiniciar  gitlab-ctl restart
+            gitlab_rails['registry_enabled'] = true     
 
-            # Documentaćão da arquitetura Registry/Gitlab >> https://docs.gitlab.com/omnibus/architecture/registry/            
-            # Enderećo que aparece no site do gitlab para poder realizar o login no regyster
-            registry_external_url "http://172.19.0.7:9001" 
-            gitlab_rails['registry_enabled'] = true
-            gitlab_rails['registry_host'] = "172.19.0.7"
-            gitlab_rails['registry_port'] = "9001"            
+            registry_external_url "http://172.19.0.3:5000" 
+            registry['enable'] = true
+            registry['env'] = { "REGISTRY_HTTP_RELATIVEURLS" => true}
             
-            # Pagina dentro do gitlab, é executada quando abre a općão de container register / correto
-            gitlab_rails['registry_api_url'] = "http://localhost:5000"
+            registry['registry_http_addr'] = "172.19.0.3:5000"
+            registry_nginx['listen_port'] = 5000
+            registry_nginx['enable'] = false
             
-            # Essa chave tem que ser criada dentro do Registry
-            gitlab_rails['registry_key_path'] = "/certs/registry.key" 
-            
-            # Configuraćão que deve ser igual a do Registry
-            gitlab_rails['registry_issuer'] = "gitlab-issuer"            
-            
-            #registry['registry_http_addr'] = "localhost:5000"
-
   ci_runner:
+    # Variaveis necessarias pra pipeline do Gitlab
+    #     KS8_APP          = teste-api
+    #     KS8_NAMESPACE     = ambiente-desenvolvimento
+    #     KUBE_CREDENTIALS = Kubeconfig convertido para base 64
+    #     REGISTRY_PORT    = 5000
+    #     REGISTRY_REPO    = 172.19.0.3
+    # Registrar com certificado - gitlab-runner register --tls-cert-file /certs/172.19.0.3.crt --tls-key-file /certs/172.19.0.3.key
+    # Verificar se o certificado está correto >> openssl s_client -CAfile 172.19.0.3.crt -connect 172.19.0.3:443
     image: gitlab/gitlab-runner:alpine
     depends_on:
     - gitlab
     restart: always
     volumes:
-    - ./gitlab/runner:/etc/gitlab-runner:Z
+    - runner-data:/etc/gitlab-runner:Z
+    - /var/run/docker.sock:/var/run/docker.sock
+    - ./certs:/certs
     networks:
       cicd:
         ipv4_address: 172.19.0.9
         aliases:
         - runner_com
-#    environment:
-#    - DOCKER_HOST="tcp://172.19.0.8:2375"
-  registry:
-    # Documentaćão para deploy no registro >> https://docs.docker.com/registry/deploying/
-    image: registry:2
-    ports:
-    - 9001:5000
-    expose:
-    - "5000"
-    - "9001"
-    volumes:
-    - ./gitlab/shared/registry:/registry
-    - ./certs:/certs
-#    external_links:
-#    - "gitlab:gitlab"
     environment:
-    - REGISTRY_LOG_LEVEL=info
-    - REGISTRY_STORAGE_FILESYSTEM_ROOTDIRECTORY=/registry
-    - REGISTRY_STORAGE_DELETE_ENABLED=true
-    - REGISTRY_STORAGE_CACHE_BLOBDESCRIPTOR=redis
-    - REGISTRY_REDIS_ADDR=redis:v
-    - REGISTRY_HTTP_SECRET=registrysegredo
-#   - REGISTRY_AUTH_TOKEN_REALM=https://172.19.0.3/jwt/auth
-#   - REGISTRY_AUTH_TOKEN_SERVICE=container_registry
-#   - REGISTRY_AUTH_TOKEN_ISSUER=gitlab-issuer
-#   - REGISTRY_AUTH_TOKEN_ROOTCERTBUNDLE=/certs/registry.crt
-
-    networks:
-      cicd:
-        ipv4_address: 172.19.0.7
-        aliases:
-        - registry_com
-    restart: always
+    - DOCKER_HOST=tcp://dind:2375
+    - DOCKER_CLI_EXPERIMENTAL=enabled
+    - GIT_SSL_NO_VERIFY=true
   jenkins:
     image: jenkins/jenkins:lts
     networks:
@@ -165,15 +148,16 @@ services:
 #    - 998 #docker group id
 #    command: /bin/sh -c "/usr/sbin/init/install_docker.sh"
   dind:
+
     # https://piotrminkowski.wordpress.com/tag/continuous-delivery/
     # https://www.youtube.com/watch?v=GLiCeMO35qE
     # Essa imagem precisou se criada do zero para atender a registrys não seguros
     #   para isso foi usada como base a imagem do enderećo https://github.com/piomin/jenkins-slave-dind-jnlp
     # Comando para visualizar os registryes inseguros
     # >> docker info| grep -A 20 "Insecure Registries"
-    #image: piomin/jenkins-slave-dind-jnlp     
+    #image: piomin/jenkins-slave-dind-jnlp 
     build: 
-      context: ./JenkinsAgentImage/jenkins-slave-dind-jnlp
+      context: ./JenkinsAgenteImage
       dockerfile: Dockerfile-criacao
     depends_on:
     - jenkins
@@ -184,9 +168,23 @@ services:
     - JENKINS_SLAVE_SECRET=b7fe13b367b97e2f5174badc8b64cee8e23035ad4254a40411426a9c2590bf0c
     - JENKINS_SLAVE_NAME=dind-node
     - JENKINS_URL=http://jenkins_com:8080
-#    - CI_SERVER_URL=http://gitlab_com
+    - CI_SERVER_URL=http://gitlab
+#    - REGISTRATION_TOKEN=
     privileged: true
-
+  rancher:
+    # usuario: rancher
+    image: rancher/rancher
+    entrypoint: ["entrypoint.sh", "--no-cacerts"]
+    privileged: true
+    networks:
+      cicd:
+        ipv4_address: 172.19.0.10
+    ports:
+      - 81:80
+      - 442:443
+    volumes:
+      - rancher-data:/var/lib/rancher:Z
+      
 networks:
   cicd:
     driver: bridge
@@ -200,3 +198,5 @@ volumes:
     gitlab-logs:
     postgresql:
     redis:
+    rancher-data:
+    runner-data:
