@@ -1,0 +1,220 @@
+image: docker:19.03.1
+variables:
+  # When using dind service, we need to instruct docker, to talk with
+  # the daemon started inside of the service. The daemon is available
+  # with a network connection instead of the default
+  # /var/run/docker.sock socket. docker:19.03.1 does this automatically
+  # by setting the DOCKER_HOST in
+  # https://github.com/docker-library/docker/blob/d45051476babc297257df490d22cbd806f1b11e4/19.03.1/docker-entrypoint.sh#L23-L29
+  #
+  # The 'docker' hostname is the alias of the service container as described at
+  # https://docs.gitlab.com/ee/ci/docker/using_docker_images.html#accessing-the-services.
+  #
+  # Note that if you're using GitLab Runner 12.7 or earlier with the Kubernetes executor and Kubernetes 1.6 or earlier,
+  # the variable must be set to tcp://localhost:2376 because of how the
+  # Kubernetes executor connects services to the job container
+  DOCKER_HOST: tcp://172.19.0.8:2375
+  #
+  # Specify to Docker where to create the certificates, Docker will
+  # create them automatically on boot, and will create
+  # `/certs/client` that will be shared between the service and job
+  # container, thanks to volume mount from config.toml
+  # DOCKER_TLS_CERTDIR: "/certs"
+services:
+  - docker:19.03.5-dind
+before_script:
+  - docker info
+
+stages:
+  - tests
+  - build
+  - image
+  - push
+  - deploy
+  - loadtest
+  - acceptance
+  - security
+  - notify
+  - homologacao
+  - producao
+
+# Jobs
+1-Verificacao_variaveis_configuracoes:
+  stage: tests
+  tags:
+  - runner
+  only:
+  - master
+  # Caso queira dar continuidade somente se for uma pasta específica
+  # 
+  # only:
+  #  changes:
+  #    - api/*  
+  variables:
+    GIT_STRATEGY: none
+  script:
+  - echo $CI_PROJECT_ROOT_NAMESPACE - $CI_PROJECT_PATH - $CI_PROJECT_PATH_SLUG - $CI_PROJECT_NAMESPACE - $CI_PROJECT_NAME || true
+
+2-Sonar-Report:
+  stage: tests
+  tags: 
+  - runner
+  only:
+  - master
+  variables:
+    GIT_STRATEGY: none
+  script:
+  - echo running sonar || true
+
+3-Image-Build:
+  stage: build
+  tags:
+  - runner  
+  only:
+  - master
+  script:
+    - docker build -t $KS8_APP -f ./api/Dockerfile.production .
+
+4-Docker_Build:
+  stage: image
+  tags:
+  - runner
+  script:
+#  - docker login --username root --password 23071223
+#   - docker login -u gitlab-ci-token -p $CI_JOB_TOKEN dockerhub.example.com
+  - docker build -f ./api/Dockerfile.production -t $REGISTRY_REPO:$REGISTRY_PORT/$CI_PROJECT_PATH/$KS8_APP:$CI_PIPELINE_ID .
+  - docker build -f ./api/Dockerfile.production -t $REGISTRY_REPO:$REGISTRY_PORT/$CI_PROJECT_PATH/$KS8_APP:latest .
+# https://github.com/quay/clair - verifica detalhes e vulnerabilidades das imagens
+5-Docker_Check:
+  stage: image
+  tags:
+  - runner
+  only:
+  - master
+  variables:
+    GIT_STRATEGY: none
+  script:
+  - echo "running clair on image $CI_PIPELINE_ID" || true
+
+# Apaga as builds antigas dentro do gitlab Runner
+6-Docker_Limpeza:
+  stage: image
+  tags:
+  - runner
+  only:
+  - master
+  script:
+  - echo "Limpando imagens da tag $REGISTRY_REPO:$REGISTRY_PORT/$CI_PROJECT_PATH/$KS8_APP| antigas e mantendo apenas latest e $CI_PIPELINE_ID"
+#  - for i in `docker images|grep $REGISTRY_REPO:$REGISTRY_PORT/$CI_PROJECT_PATH/$KS8_APP|egrep -v '(latest|$CI_PIPELINE_ID)' | awk '{ print $1 ":" $2 }'`; do docker rmi -f $i;done
+  - for i in `docker images|grep $REGISTRY_REPO:$REGISTRY_PORT/$CI_PROJECT_PATH/$KS8_APP|egrep -v '(latest|$CI_PIPELINE_ID)' | awk '{ print $1 ":" $2 }'`; do echo $i ;done
+
+7_Docker_Push:
+  stage: push
+  tags:
+  - runner
+  script:
+  - docker login -u root -p 23071223 $REGISTRY_REPO:$REGISTRY_PORT
+  - docker push $REGISTRY_REPO:$REGISTRY_PORT/$CI_PROJECT_PATH/$KS8_APP:$CI_PIPELINE_ID
+
+8_Kubernets-desenvolvimento:
+  stage: deploy
+  tags:
+  - runner
+  image:
+    name: bitnami/kubectl:1.14
+    entrypoint: [""]
+  before_script:
+  - echo $KUBE_CREDENTIALS | base64 -d > config
+  - export KUBECONFIG=config
+  script:
+  - echo "Subindo imagem para o Kubernets"
+#  - git tag -a ${tag} -m "Deploy - branch ${CI_COMMIT_BRANCH} - Mensagem ${CI_COMMIT_MESSAGE} - N.Build ${CI_PIPELINE_ID} "
+  - kubectl set image --insecure-skip-tls-verify=true -n $KS8_NAMESPACE deployment/$KS8_APP $KS8_APP=$REGISTRY_REPO:$REGISTRY_PORT/$CI_PROJECT_PATH/$KS8_APP:$CI_PIPELINE_ID
+
+9_Teste_estresse:
+  stage: loadtest
+  tags:
+  - runner
+  only:
+  - master
+  dependencies:
+  - 8_Kubernets-desenvolvimento
+  #image:
+  #  name: loadimpact/k6:latest
+  #  entrypoint: [""]
+  script:
+  - echo "executing k6 againt site with 9000 requests in 30s..."
+#    - k6 run ./loadtests/performance-test.js
+
+10_Teste_automatizado-selenium:
+  stage: acceptance
+  tags:
+  - runner
+  only:
+  - master
+  variables:
+    GIT_STRATEGY: none
+  script:
+  - echo running selenium acceptance tests || true
+
+11_Vulnerabilidade-CVE_scanner:
+  stage: security
+  tags:
+  - runner
+  only:
+  - master
+  dependencies:
+  - 10_Teste_automatizado-selenium
+  variables:
+    GIT_STRATEGY: none
+  script:
+  - echo running a security scanner || true
+
+12_Notificar_time:
+  stage: notify
+  tags:
+  - runner
+  only:
+  - master
+  variables:
+    GIT_STRATEGY: none
+  script:
+  - echo notifying teams || true
+
+13_Kubernets-homologacao:
+  stage: homologacao
+  tags:
+  - runner
+  dependencies:
+  - 12_Notificar_time
+  image:
+    name: bitnami/kubectl:1.14
+    entrypoint: [""]
+  #before_script:
+  #- echo $KUBE_CREDENTIALS | base64 -d > config
+  #3- export KUBECONFIG=config
+  when: manual
+  allow_failure: false
+  script:
+  - echo "Subindo imagem para o Kubernets"
+#  - git tag -a ${tag} -m "Deploy - branch ${CI_COMMIT_BRANCH} - Mensagem ${CI_COMMIT_MESSAGE} - N.Build ${CI_PIPELINE_ID} "
+  #- kubectl set image -n $KS8_NAMESPACE deployment/$KS8_APP $KS8_APP=$NEXUS_REPO:$NEXUS_PORT_PULL/demo:$CI_PIPELINE_ID
+
+14_Kubernets-producao:
+  stage: producao
+  tags:
+  - runner
+  dependencies:
+  - 13_Kubernets-homologacao
+  image:
+    name: bitnami/kubectl:1.14
+    entrypoint: [""]
+  when: manual
+  allow_failure: false
+  #before_script:
+  #- echo $KUBE_CREDENTIALS | base64 -d > config
+  #3- export KUBECONFIG=config
+  script:
+  - echo "Subindo imagem para o Kubernets"
+#  - git tag -a ${tag} -m "Deploy - branch ${CI_COMMIT_BRANCH} - Mensagem ${CI_COMMIT_MESSAGE} - N.Build ${CI_PIPELINE_ID} "
+  #- kubectl set image -n $KS8_NAMESPACE deployment/$KS8_APP $KS8_APP=$NEXUS_REPO:$NEXUS_PORT_PULL/demo:$CI_PIPELINE_ID
